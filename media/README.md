@@ -1,0 +1,1 @@
+Add music and video files that you own or are licensed to use to this folder. Snapclone indexes supported files here and can play or download them locally. Video search results use YouTube's official embedded player.

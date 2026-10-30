@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#090a12" />
+  <meta name="application-name" content="Sonara" />
+  <link rel="icon" type="image/png" href="/assets/icon.png" />
+  <title>Sonara — Music that feels like you</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar glass">
+      <a class="brand" href="#" aria-label="Sonara home"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>sonara<span class="brand-dot">.</span></span></a>
+      <div class="side-label">YOUR SPACE</div>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-item active" data-view="discover"><span class="nav-icon">◉</span> Discover</button>
+        <button class="nav-item" data-view="library"><span class="nav-icon">▤</span> Your library</button>
+        <button class="nav-item" data-view="downloads"><span class="nav-icon">⇩</span> Downloads <span class="nav-count" id="downloadCount">0</span></button>
+      </nav>
+      <div class="side-label playlist-label">YOUR PLAYLISTS <button id="addPlaylist" class="tiny-add" title="Create playlist">+</button></div>
+      <nav id="playlistNav" class="playlist-nav" aria-label="Playlists"></nav>
+      <div class="sidebar-bottom">
+        <div class="upgrade-card"><div class="upgrade-orb"></div><span class="eyebrow">YOUR SOUND, UNLIMITED</span><h3>Make room<br>for more.</h3><p>Go Plus for offline listening and high fidelity audio.</p><button class="upgrade-button" id="upgradeBtn">Explore Plus <span>↗</span></button></div>
+        <button class="profile-button" id="accountButton"><span class="avatar" id="accountAvatar">S</span><span><b id="accountName">Your account</b><small id="accountStatus">Sign in to sync</small></span><span class="profile-more">···</span></button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar"><div class="history-buttons"><button aria-label="Back">‹</button><button aria-label="Forward">›</button></div><label class="search-box"><span>⌕</span><input id="searchInput" type="search" placeholder="Search songs, artists, moods..." autocomplete="off"/><kbd>⌘ K</kbd></label><button class="source-status" id="sourceStatus" title="Configure music source"><i></i><span>Connecting</span></button><button class="top-upgrade" id="topUpgrade">Get Sonara Plus <span>↗</span></button><button class="mobile-menu" id="mobileMenu" aria-label="Open menu">☰</button></header>
+
+      <section class="content-view" id="discoverView">
+        <section class="hero"><div class="hero-glow glow-one"></div><div class="hero-glow glow-two"></div><div class="hero-content"><div class="eyebrow hero-eyebrow"><span class="live-dot"></span> MUSIC VIDEOS, MADE FOR YOU</div><h1>Press play.<br><em>Feel more.</em></h1><p>Discover music videos from around the world and build a soundtrack that’s yours.</p><button class="hero-cta" id="mixButton"><span>▶</span> Play something good</button></div><div class="hero-art"><div class="art-disc"><div class="disc-shine"></div><div class="disc-center"><span>SONARA</span><b>▶</b></div></div><div class="float-chip chip-top"><span class="chip-wave">≋</span> global sounds</div><div class="float-chip chip-bottom"><span class="chip-eq">▂▅▃</span> your next favorite</div></div><div class="hero-index">01 <span>/</span> 04</div></section>
+        <section id="videoStage" class="video-stage hidden"><video id="localVideoPlayer" controls playsinline></video><div id="videoStageCaption" class="video-stage-caption"></div></section>
+        <section class="section-block"><div class="section-heading"><div><div class="eyebrow">PLAY SOMETHING NEW</div><h2 id="feedHeading">Video songs for you</h2></div><div class="feed-actions"><button class="text-link" id="uploadMediaBtn">＋ Add your music</button><input id="localMediaPicker" type="file" accept="audio/*,video/mp4,video/webm,video/quicktime" multiple hidden><button class="text-link" id="shuffleButton">Shuffle <span>⤨</span></button></div></div><div class="filter-pills feed-pills"><button class="filter-pill selected" data-feed="popular">For you</button><button class="filter-pill" data-feed="kenya">Kenyan hits</button><button class="filter-pill" data-feed="afrobeats">Afrobeats</button><button class="filter-pill" data-feed="gospel">Gospel</button><button class="filter-pill" data-feed="library">My videos</button></div><div id="recentSearches" class="recent-searches hidden"></div><div class="video-grid" id="trackList"></div></section>
+        <footer class="page-footer"><span>Sound, on your terms.</span><span>Made for the moments that matter <b>✳</b></span></footer>
+      </section>
+
+      <section class="content-view alternate-view hidden" id="libraryView"><div class="page-title"><div class="eyebrow">ALL YOUR FAVORITES, ONE PLACE</div><h1>Your library</h1><p>Everything you’ve saved, ready when you are.</p></div><div class="filter-pills"><button class="filter-pill selected" data-filter="all">All</button><button class="filter-pill" data-filter="tracks">Songs</button><button class="filter-pill" data-filter="playlists">Playlists</button></div><div id="libraryContent" class="library-grid"></div></section>
+      <section class="content-view alternate-view hidden" id="downloadsView"><div class="page-title"><div class="eyebrow">YOUR SAVED AUDIO</div><h1>Downloads</h1><p>Audio you’ve saved from the music source.</p></div><div id="downloadsContent"></div></section>
+    </main>
+    <aside class="right-panel glass"><div class="queue-head"><div><div class="eyebrow">UP NEXT</div><h3>Your queue</h3></div><button class="queue-menu" aria-label="Queue options">···</button></div><div class="now-playing-card" id="nowPlayingCard"><div class="mini-cover cover-violet" id="nowCover"><span>01</span></div><div class="now-meta"><div class="eyebrow">NOW PLAYING</div><b id="nowTitle">Choose a song</b><span id="nowArtist">Your next favorite is here</span></div><button class="heart-button" id="favoriteNow" title="Save song">♡</button></div><div class="queue-divider"><span>UP NEXT</span><button id="clearQueue">Clear</button></div><div id="queueList" class="queue-list"></div><div class="sound-note"><span class="note-icon">✳</span><span><b>A note from Sonara</b><small>Your taste is your own. We’ll keep finding the good stuff.</small></span></div></aside>
+  </div>
+  <div class="player-bar glass"><div class="player-track"><div class="player-cover cover-violet" id="playerCover"><span>01</span></div><div class="player-meta"><b id="playerTitle">Choose a song</b><span id="playerArtist">Your next favorite is here</span></div><button id="playerFavorite" class="player-heart" title="Save song">♡</button></div><div class="player-controls"><div class="control-buttons"><button id="shuffleControl" title="Shuffle">⤨</button><button id="prevButton" title="Previous">|‹</button><button class="play-button" id="playButton" title="Play">▶</button><button id="nextButton" title="Next">›|</button><button id="repeatControl" title="Repeat">↻</button></div><div class="progress-row"><span id="currentTime">0:00</span><input type="range" id="progress" min="0" max="100" value="0" aria-label="Track position"><span id="duration">0:00</span></div></div><div class="player-options"><button id="playerDownload" title="Download local file">⇩</button><select id="playbackSpeed" aria-label="Playback speed" title="Playback speed"><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select><button id="queueToggle" title="Queue">☷</button><span class="volume-icon">◖</span><input type="range" id="volume" min="0" max="1" step="0.01" value="0.7" aria-label="Volume"></div></div>
+  <div id="toast" class="toast" role="status"></div><dialog id="playlistDialog" class="playlist-dialog"><form method="dialog" id="playlistForm"><button class="dialog-close" value="cancel" aria-label="Close">×</button><div class="eyebrow">MAKE IT YOURS</div><h2>Create a playlist</h2><p>Give this collection a name. You can change it any time.</p><input id="playlistName" maxlength="32" placeholder="e.g. Sunday slow-down" required><div class="dialog-actions"><button class="cancel-button" value="cancel">Cancel</button><button class="create-button" id="createPlaylistBtn" value="default">Create playlist <span>→</span></button></div></form></dialog>
+  <dialog id="accountDialog" class="playlist-dialog"><form method="dialog" id="accountForm"><button class="dialog-close" value="cancel" aria-label="Close">×</button><div class="eyebrow">YOUR SONARA ACCOUNT</div><h2 id="accountHeading">Sign in</h2><p>Sync your saved videos, playlists, and listening history.</p><input id="accountNameInput" maxlength="60" placeholder="Your name" autocomplete="name" class="hidden"><input id="accountEmail" type="email" placeholder="Email address" autocomplete="email" required><input id="accountPassword" type="password" placeholder="Password · at least 10 characters" autocomplete="current-password" required><div class="dialog-actions"><button type="button" id="accountModeToggle" class="cancel-button">Create account</button><button class="create-button" id="accountSubmit">Sign in <span>→</span></button></div><button type="button" class="logout-button hidden" id="logoutButton">Sign out</button></form></dialog>
+  <dialog id="videoDownloadDialog" class="playlist-dialog"><form id="videoDownloadForm"><button class="dialog-close" type="button" data-close-download aria-label="Close">×</button><div class="eyebrow">SAVE FOR LATER</div><h2>Download video</h2><p id="downloadVideoTitle">Choose a format. The backend prepares the file before it downloads.</p><select id="downloadFormat" class="download-format"><option value="video_360">MP4 · 360p</option><option value="video_480">MP4 · 480p</option><option value="video_720" selected>MP4 · 720p HD</option><option value="video_1080">MP4 · 1080p Full HD</option><option value="audio_192">MP3 · 192 kbps</option><option value="audio_320">MP3 · 320 kbps</option></select><label class="permission-check"><input id="downloadPermission" type="checkbox" required><span>I own this video or have permission to download it.</span></label><div class="dialog-actions"><button class="cancel-button" type="button" data-close-download>Cancel</button><button class="create-button">Prepare download <span>⇩</span></button></div></form></dialog>
+  <script src="app.js"></script>
+</body>
+</html>

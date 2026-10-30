@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+.env
+data/
+android/app/debug.keystore
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+media/*
+!media/README.md
