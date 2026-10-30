@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, BackHandler, Image, Keyboard, KeyboardAvoidingView, Platform,
-  Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput,
+  ActivityIndicator, Alert, Animated, BackHandler, FlatList, Image, Keyboard, KeyboardAvoidingView, Platform,
+  Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, TextInput,
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -9,8 +9,6 @@ import Constants from 'expo-constants';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import mobileAds, { AdsConsent, BannerAd, BannerAdSize, TestIds } from 'react-native-google-mobile-ads';
-import { OneSignal } from 'react-native-onesignal';
 
 const DEFAULT_API = 'http://192.168.150.152:5000';
 const STORE = '@snapclone-mobile';
@@ -104,6 +102,8 @@ function rankSearchResults(candidates, query) {
 
 function MusicApp() {
   const insets = useSafeAreaInsets();
+  const feedScrollY = useRef(new Animated.Value(0)).current;
+  const [feedHeaderHeight, setFeedHeaderHeight] = useState(0);
   const [apiBase, setApiBase] = useState(DEFAULT_API);
   const [token, setToken] = useState('');
   const [user, setUser] = useState(null);
@@ -116,9 +116,11 @@ function MusicApp() {
   const [current, setCurrent] = useState(null);
   const [queue, setQueue] = useState([]);
   const [query, setQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
   const [loadedSearchQuery, setLoadedSearchQuery] = useState('');
   const [nextSearchPage, setNextSearchPage] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [tasteReady, setTasteReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -136,7 +138,6 @@ function MusicApp() {
   const [playerOpen, setPlayerOpen] = useState(false);
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoError, setVideoError] = useState('');
-  const [adsReady, setAdsReady] = useState(false);
   const finishHandled = useRef(false);
   const playbackHistory = useRef([]);
   const tasteHistory = useRef([]);
@@ -144,8 +145,9 @@ function MusicApp() {
   const loadedSearchRef = useRef('');
   const recentSearchesRef = useRef([]);
   const seenRecommendationIds = useRef([]);
-  const oneSignalAppId = Constants.expoConfig?.extra?.oneSignalAppId || '';
-  const bannerUnitId = __DEV__ ? TestIds.BANNER : (Constants.expoConfig?.extra?.admobBannerId || '');
+  const exploreQueriesRef = useRef([]);
+  const exploreCursorRef = useRef(0);
+  const loadingFeedPageRef = useRef(false);
 
   const player = useVideoPlayer(null, p => { p.loop = false; p.muted = true; });
   const audioPlayer = useAudioPlayer(null, { updateInterval: 500 });
@@ -178,6 +180,30 @@ function MusicApp() {
 
   const artistAffinity = useMemo(() => buildArtistAffinity(favorites, playlists, tasteHistory.current), [favorites, playlists, history]);
   const favoriteArtistNames = useMemo(() => [...artistAffinity.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([artist]) => artist), [artistAffinity]);
+  const searchSuggestions = useMemo(() => {
+    const text = query.trim().toLocaleLowerCase();
+    if (text.length < 2 || !searchFocused) return [];
+    const suggestions = new Map();
+    suggestions.set(`search:${text}`, { title: query.trim(), detail: 'Search all songs and videos', query: query.trim(), isSearch: true });
+    recentSearches.forEach(term => {
+      if (term.toLocaleLowerCase().includes(text)) suggestions.set(term.toLocaleLowerCase(), { title: term, detail: 'Recent search', query: term });
+    });
+    [...tracks, ...favorites, ...history].forEach(track => {
+      const title = String(track.title || '').trim();
+      const artist = String(track.artist || '').trim();
+      const key = `${title} ${artist}`.trim();
+      if (title.toLocaleLowerCase().includes(text) || artist.toLocaleLowerCase().includes(text)) {
+        const id = key.toLocaleLowerCase();
+        if (key && !suggestions.has(id)) suggestions.set(id, { title, detail: artist, query: key });
+      }
+      if (artist.toLocaleLowerCase().includes(text) && !suggestions.has(`artist:${artist.toLocaleLowerCase()}`)) {
+        suggestions.set(`artist:${artist.toLocaleLowerCase()}`, { title: artist, detail: 'Artist', query: artist });
+      }
+    });
+    return [...suggestions.values()].slice(0, 6);
+  }, [favorites, history, query, recentSearches, searchFocused, tracks]);
+
+  useEffect(() => { if (tab !== 'discover') setSearchFocused(false); }, [tab]);
 
   const loadFeed = useCallback(async (search = '') => {
     const requestId = ++feedRequestId.current;
@@ -209,16 +235,16 @@ function MusicApp() {
       const exploreSeeds = ['new afrobeats music video', 'Kenyan pop music videos', 'Amapiano official videos', 'new R&B music videos', 'dancehall music videos', 'global gospel music videos', 'Latin pop music videos', 'K-pop official music videos'];
       const preferredQueries = [...recentSearchesRef.current.slice(0, 2), ...preferredArtists]
         .filter((value, index, list) => list.findIndex(x => x.toLowerCase() === value.toLowerCase()) === index).slice(0, 4);
-      for (const seed of exploreSeeds.sort(() => Math.random() - 0.5)) {
-        if (preferredQueries.length >= 4) break;
-        if (!preferredQueries.some(q => q.toLowerCase() === seed.toLowerCase())) preferredQueries.push(seed);
-      }
+      const allExploreQueries = [...preferredQueries, ...exploreSeeds.sort(() => Math.random() - 0.5).filter(seed => !preferredQueries.some(q => q.toLowerCase() === seed.toLowerCase()))];
+      const initialQueries = allExploreQueries.slice(0, 4);
+      exploreQueriesRef.current = allExploreQueries;
+      exploreCursorRef.current = initialQueries.length;
       const ranked = rankRecommendations(items, currentAffinity, favorites, tasteHistory.current, recentSearchesRef.current, seenRecommendationIds.current);
       setTracks(ranked);
       rememberRecommendations(ranked);
       setStatus('Connected');
-      if (preferredQueries.length) {
-        Promise.all(preferredQueries.map(value => request(`/api/music/search?q=${encodeURIComponent(value)}&pages=1`).then(x => x.items || []).catch(() => [])))
+      if (initialQueries.length) {
+        Promise.all(initialQueries.map(value => request(`/api/music/search?q=${encodeURIComponent(value)}&pages=1`).then(x => x.items || []).catch(() => [])))
           .then(resultSets => {
             if (requestId !== feedRequestId.current) return;
             setTracks(previous => {
@@ -239,20 +265,58 @@ function MusicApp() {
   }
 
   async function loadMoreSearch() {
-    if (!nextSearchPage || loadingMore || !query.trim() || query.trim() !== loadedSearchQuery) return;
+    if (!nextSearchPage || loadingFeedPageRef.current || !query.trim() || query.trim() !== loadedSearchQuery) return;
     const activeQuery = loadedSearchRef.current;
+    const requestId = feedRequestId.current;
+    loadingFeedPageRef.current = true;
     setLoadingMore(true); setError('');
     try {
       const result = await request(`/api/music/search?q=${encodeURIComponent(activeQuery)}&pages=${nextSearchPage}`);
-      if (activeQuery !== loadedSearchRef.current) return;
+      if (requestId !== feedRequestId.current || activeQuery !== loadedSearchRef.current) return;
       setTracks(previous => {
         const merged = new Map(previous.map(t => [t.id, t]));
-        (result.items || []).forEach(raw => { const t = normalizeTrack(raw); if (t.id) merged.set(t.id, t); });
-        return rankSearchResults([...merged.values()], activeQuery);
+        const additions = [];
+        (result.items || []).map(normalizeTrack).forEach(track => { if (track.id && !merged.has(track.id)) { merged.set(track.id, track); additions.push(track); } });
+        const ordered = rankSearchResults(additions, activeQuery);
+        return [...previous, ...ordered];
       });
       setNextSearchPage(result.nextPage);
     } catch (e) { if (activeQuery === loadedSearchRef.current) setError(e.message); }
-    finally { setLoadingMore(false); }
+    finally { loadingFeedPageRef.current = false; setLoadingMore(false); }
+  }
+
+  async function loadMoreRecommendations() {
+    if (loadingFeedPageRef.current) return;
+    if (exploreCursorRef.current >= exploreQueriesRef.current.length) {
+      exploreQueriesRef.current = [...exploreQueriesRef.current].sort(() => Math.random() - 0.5);
+      exploreCursorRef.current = 0;
+    }
+    const queries = exploreQueriesRef.current.slice(exploreCursorRef.current, exploreCursorRef.current + 3);
+    if (!queries.length) return;
+    exploreCursorRef.current += queries.length;
+    const requestId = feedRequestId.current;
+    loadingFeedPageRef.current = true;
+    setLoadingMore(true);
+    try {
+      const results = await Promise.all(queries.map(value => request(`/api/music/search?q=${encodeURIComponent(value)}&pages=1`).then(x => x.items || []).catch(() => [])));
+      if (requestId !== feedRequestId.current) return;
+      const additions = results.flat().map(normalizeTrack);
+      setTracks(previous => {
+        const existing = new Set(previous.map(item => item.id));
+        const fresh = [];
+        additions.forEach(item => { if (item.id && !existing.has(item.id)) { existing.add(item.id); fresh.push(item); } });
+        const next = [...previous, ...rankRecommendations(fresh, artistAffinity, favorites, tasteHistory.current, recentSearchesRef.current, seenRecommendationIds.current)];
+        rememberRecommendations(next);
+        return next;
+      });
+    } catch (e) { setError(e.message); }
+    finally { loadingFeedPageRef.current = false; setLoadingMore(false); }
+  }
+
+  async function refreshCurrentList() {
+    setRefreshing(true);
+    try { if (tab === 'discover') await loadFeed(query); else await loadLibrary(); }
+    finally { setRefreshing(false); }
   }
 
   useEffect(() => {
@@ -274,24 +338,6 @@ function MusicApp() {
   useEffect(() => {
     setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true, interruptionMode: 'doNotMix' }).catch(() => {});
   }, []);
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        await AdsConsent.gatherConsent();
-        const { canRequestAds } = await AdsConsent.getConsentInfo();
-        if (!canRequestAds) return;
-        await mobileAds().initialize();
-        if (active) setAdsReady(true);
-      } catch (e) { console.warn('Sonara ads are unavailable until the native build is configured.', e?.message || e); }
-    })();
-    return () => { active = false; };
-  }, []);
-  useEffect(() => {
-    if (!oneSignalAppId || Constants.appOwnership === 'expo') return;
-    try { OneSignal.initialize(oneSignalAppId); }
-    catch (e) { console.warn('OneSignal could not initialize.', e?.message || e); }
-  }, [oneSignalAppId]);
   useEffect(() => {
     const sub = player.addListener('playingChange', e => setPlaying(e.isPlaying));
     return () => sub.remove();
@@ -360,14 +406,6 @@ function MusicApp() {
   function closePlayer() {
     setPlayerOpen(false);
     player.pause();
-  }
-
-  async function enableNotifications() {
-    if (!oneSignalAppId) { Alert.alert('Notifications are being set up', 'Add your OneSignal App ID and Firebase credentials to enable push notifications.'); return; }
-    try {
-      const granted = await OneSignal.Notifications.requestPermission(false);
-      Alert.alert(granted ? 'Notifications enabled' : 'Notifications not enabled', granted ? 'We’ll let you know when there is something worth hearing.' : 'You can enable notifications later in your phone settings.');
-    } catch { Alert.alert('Could not enable notifications', 'Please try again after installing the Sonara development build.'); }
   }
 
   async function retryVideo() {
@@ -511,10 +549,13 @@ function MusicApp() {
         <Pressable style={s.miniControl} onPress={e => { e.stopPropagation(); togglePlayback(); }}><Text style={s.playGlyph}>{playing ? 'Ⅱ' : '▶'}</Text></Pressable>
       </Pressable>}
 
-      {tab === 'discover' && !playerOpen && <View style={s.searchWrap}>
-        <TextInput style={s.searchInput} value={query} onChangeText={setQuery} onSubmitEditing={() => loadFeed(query)} placeholder="Search songs, artists, videos" placeholderTextColor={C.muted} returnKeyType="search" />
-        <Pressable style={s.searchButton} onPress={() => loadFeed(query)}><Text style={s.searchGlyph}>⌕</Text></Pressable>
-      </View>}
+      {tab === 'discover' && !playerOpen && <>
+        <View style={[s.searchWrap, searchSuggestions.length > 0 && { marginBottom: 8 }]}>
+          <TextInput style={s.searchInput} value={query} onChangeText={setQuery} onFocus={() => setSearchFocused(true)} onSubmitEditing={() => { setSearchFocused(false); Keyboard.dismiss(); loadFeed(query); }} placeholder="Search songs, artists, videos" placeholderTextColor={C.muted} returnKeyType="search" autoCorrect={false} />
+          <Pressable style={s.searchButton} onPress={() => { setSearchFocused(false); Keyboard.dismiss(); loadFeed(query); }}><Text style={s.searchGlyph}>⌕</Text></Pressable>
+        </View>
+        {searchSuggestions.length > 0 && <View style={s.suggestionPanel}>{searchSuggestions.map((item, index) => <Pressable key={`${item.title}-${index}`} style={s.searchSuggestion} onPress={() => { setQuery(item.query); setSearchFocused(false); Keyboard.dismiss(); loadFeed(item.query); }}><View style={s.searchSuggestionIcon}><Text style={s.searchSuggestionGlyph}>{item.isSearch ? '⌕' : item.detail === 'Recent search' ? '◷' : '♫'}</Text></View><View style={{ flex: 1 }}><Text numberOfLines={1} style={s.searchSuggestionTitle}>{item.title}</Text><Text numberOfLines={1} style={s.searchSuggestionDetail}>{item.detail}</Text></View><Text style={s.searchSuggestionArrow}>↗</Text></Pressable>)}</View>}
+      </>}
 
       {error ? <Pressable onPress={() => setError('')} style={s.errorBox}><Text style={s.errorText}>{error}  ×</Text></Pressable> : null}
 
@@ -540,7 +581,6 @@ function MusicApp() {
           <Pressable style={s.seekButton} onPress={() => audioPlayer.seekTo(Math.min(audioStatus.duration || 0, audioStatus.currentTime + 30))}><Text style={s.seekGlyph}>+30</Text></Pressable>
           <Pressable style={s.transportSide} onPress={playNextTrack}><Text style={s.transportSideGlyph}>›|</Text></Pressable>
         </View>
-        {adsReady && bannerUnitId ? <View style={s.adCard}><Text style={s.adLabel}>SPONSORED</Text><BannerAd unitId={bannerUnitId} size={BannerAdSize.LARGE_ANCHORED_ADAPTIVE_BANNER} onAdFailedToLoad={e => console.warn('Ad banner failed to load:', e.message)} /></View> : null}
         <View style={s.queueHeading}><View><Text style={s.sectionTitle}>UP NEXT</Text><Text style={s.queueCount}>{queue.length ? `${queue.length} ${queue.length === 1 ? 'song' : 'songs'}` : 'A little more of your taste'}</Text></View>{queue.length ? <Pressable onPress={() => { setQueue([]); persistQueue([]); }}><Text style={s.linkText}>Clear</Text></Pressable> : null}</View>
         {queue.length ? queue.map((t, i) => <View key={t.id} style={s.queueRow}>
           <Text style={s.queuePosition}>{String(i + 1).padStart(2, '0')}</Text>
@@ -560,18 +600,45 @@ function MusicApp() {
         {tab === 'library' && selectedPlaylist ? <Pressable onPress={() => setSelectedPlaylist(null)}><Text style={s.linkText}>← Library</Text></Pressable> : null}
       </View>
 
-      {tab === 'discover' || tab === 'library' ? <ScrollView contentContainerStyle={s.list} keyboardShouldPersistTaps="handled">
-        {tab === 'discover' && favoriteArtistNames.length > 0 && !query.trim() && <View style={s.recommendationCard}><Text style={s.sectionTitle}>TUNED TO YOUR TASTE</Text><Text style={s.recommendationText}>More from {favoriteArtistNames.join(', ')}</Text><Text style={s.recommendationSub}>Favorites and recent listening help shape what you see here.</Text></View>}
-        {tab === 'discover' && recentSearches.length > 0 && !query.trim() && <View style={s.recentSearchSection}><Text style={s.sectionTitle}>RECENT SEARCHES</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.recentSearchList}>{recentSearches.slice(0, 6).map(term => <Pressable key={term} style={s.recentSearchChip} onPress={() => { setQuery(term); loadFeed(term); }}><Text numberOfLines={1} style={s.recentSearchText}>{term}</Text></Pressable>)}</ScrollView></View>}
-        {tab === 'library' && !selectedPlaylist && <>
-          <View style={s.sectionRow}><Text style={s.sectionTitle}>PLAYLISTS</Text><Pressable onPress={() => setShowPlaylistForm(v => !v)}><Text style={s.linkText}>＋ New</Text></Pressable></View>
-          {showPlaylistForm && <View style={s.createRow}><TextInput style={s.formInput} value={playlistName} onChangeText={setPlaylistName} placeholder="Playlist name" placeholderTextColor={C.muted} /><Pressable style={s.smallPrimary} onPress={createPlaylist}><Text style={s.buttonText}>Create</Text></Pressable></View>}
-          {playlists.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.playlistStrip}>{playlists.map(p => <Pressable key={p.id} onPress={() => setSelectedPlaylist(p.id)} style={s.playlistPill}><Text style={s.playlistIcon}>♫</Text><Text style={s.playlistName} numberOfLines={1}>{p.name}</Text></Pressable>)}</ScrollView> : <Text style={s.emptyHint}>Create a playlist to collect videos.</Text>}
-          <Text style={[s.sectionTitle, { marginTop: 20 }]}>SAVED VIDEOS</Text>
-        </>}
-        {busy && !visibleTracks.length ? <ActivityIndicator size="large" color={C.purple} style={{ marginTop: 50 }} /> : visibleTracks.length ? visibleTracks.map(t => <TrackCard key={t.id} track={t} favorite={favorites.some(x => x.id === t.id)} onPlay={() => playTrack(t)} onFavorite={() => toggleFavorite(t)} onPlaylist={() => promptPlaylist(t)} onNext={() => queueNext(t)} onQueue={() => addToQueue(t)} />) : <View style={s.empty}><Text style={s.emptyIcon}>{tab === 'library' ? '♡' : '♫'}</Text><Text style={s.emptyTitle}>{tab === 'library' ? 'Your library is waiting' : 'No videos found'}</Text><Text style={s.muted}>{tab === 'library' ? 'Tap the heart on a video to save it here.' : (error || 'Try another search or check the server connection.')}</Text>{tab === 'discover' && <Pressable style={s.outlineButton} onPress={() => loadFeed(query)}><Text style={s.linkText}>Try again</Text></Pressable>}</View>}
-        {tab === 'discover' && query.trim() === loadedSearchQuery && query.trim() && nextSearchPage && <Pressable style={[s.loadMore, loadingMore && { opacity: 0.6 }]} onPress={loadMoreSearch} disabled={loadingMore}><Text style={s.loadMoreText}>{loadingMore ? 'Finding more videos…' : 'Load more search results'}</Text></Pressable>}
-      </ScrollView> : tab === 'account' ? <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      {tab === 'discover' || tab === 'library' ? <Animated.FlatList
+        data={visibleTracks}
+        keyExtractor={item => item.id}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={s.list}
+        showsVerticalScrollIndicator={false}
+        removeClippedSubviews={Platform.OS === 'android'}
+        initialNumToRender={3}
+        maxToRenderPerBatch={4}
+        windowSize={5}
+        updateCellsBatchingPeriod={32}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshCurrentList} tintColor={C.purple} colors={[C.purple]} progressBackgroundColor={C.panel} />}
+        onEndReached={() => { if (tab !== 'discover') return; if (query.trim()) loadMoreSearch(); else loadMoreRecommendations(); }}
+        onEndReachedThreshold={0.65}
+        scrollEventThrottle={16}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: feedScrollY } } }], { useNativeDriver: true })}
+        ListHeaderComponent={<View onLayout={event => { const height = event.nativeEvent.layout.height; if (height !== feedHeaderHeight) setFeedHeaderHeight(height); }}>
+          {tab === 'discover' && favoriteArtistNames.length > 0 && !query.trim() && <View style={s.recommendationCard}><Text style={s.sectionTitle}>TUNED TO YOUR TASTE</Text><Text style={s.recommendationText}>More from {favoriteArtistNames.join(', ')}</Text><Text style={s.recommendationSub}>Favorites and recent listening help shape what you see here.</Text></View>}
+          {tab === 'discover' && recentSearches.length > 0 && !query.trim() && <View style={s.recentSearchSection}><Text style={s.sectionTitle}>RECENT SEARCHES</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.recentSearchList}>{recentSearches.slice(0, 6).map(term => <Pressable key={term} style={s.recentSearchChip} onPress={() => { setQuery(term); loadFeed(term); }}><Text numberOfLines={1} style={s.recentSearchText}>{term}</Text></Pressable>)}</ScrollView></View>}
+          {tab === 'library' && !selectedPlaylist && <>
+            <View style={s.sectionRow}><Text style={s.sectionTitle}>PLAYLISTS</Text><Pressable onPress={() => setShowPlaylistForm(v => !v)}><Text style={s.linkText}>＋ New</Text></Pressable></View>
+            {showPlaylistForm && <View style={s.createRow}><TextInput style={s.formInput} value={playlistName} onChangeText={setPlaylistName} placeholder="Playlist name" placeholderTextColor={C.muted} /><Pressable style={s.smallPrimary} onPress={createPlaylist}><Text style={s.buttonText}>Create</Text></Pressable></View>}
+            {playlists.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.playlistStrip}>{playlists.map(p => <Pressable key={p.id} onPress={() => setSelectedPlaylist(p.id)} style={s.playlistPill}><Text style={s.playlistIcon}>♫</Text><Text style={s.playlistName} numberOfLines={1}>{p.name}</Text></Pressable>)}</ScrollView> : <Text style={s.emptyHint}>Create a playlist to collect videos.</Text>}
+            <Text style={[s.sectionTitle, { marginTop: 20 }]}>SAVED VIDEOS</Text>
+          </>}
+        </View>}
+        renderItem={({ item, index }) => {
+          const center = feedHeaderHeight + index * 262;
+          const inputRange = [center - 262, center, center + 262];
+          const scale = feedScrollY.interpolate({ inputRange, outputRange: [0.95, 1, 0.95], extrapolate: 'clamp' });
+          const lift = feedScrollY.interpolate({ inputRange, outputRange: [0, -10, 0], extrapolate: 'clamp' });
+          const opacity = feedScrollY.interpolate({ inputRange, outputRange: [0.84, 1, 0.9], extrapolate: 'clamp' });
+          return <Animated.View style={{ transform: [{ scale }, { translateY: lift }], opacity, zIndex: index }}>
+            <TrackCard track={item} favorite={favorites.some(x => x.id === item.id)} onPlay={() => playTrack(item)} onFavorite={() => toggleFavorite(item)} onPlaylist={() => promptPlaylist(item)} onNext={() => queueNext(item)} onQueue={() => addToQueue(item)} />
+          </Animated.View>;
+        }}
+        ListEmptyComponent={busy ? <ActivityIndicator size="large" color={C.purple} style={{ marginTop: 50 }} /> : <View style={s.empty}><Text style={s.emptyIcon}>{tab === 'library' ? '♡' : '♫'}</Text><Text style={s.emptyTitle}>{tab === 'library' ? 'Your library is waiting' : 'No videos found'}</Text><Text style={s.muted}>{tab === 'library' ? 'Tap the heart on a video to save it here.' : (error || 'Try another search or check the server connection.')}</Text>{tab === 'discover' && <Pressable style={s.outlineButton} onPress={() => loadFeed(query)}><Text style={s.linkText}>Try again</Text></Pressable>}</View>}
+        ListFooterComponent={tab === 'discover' && loadingMore ? <View style={s.infiniteFooter}><ActivityIndicator color={C.purple} /><Text style={s.muted}>Finding more videos…</Text></View> : tab === 'discover' && query.trim() === loadedSearchQuery && query.trim() && nextSearchPage ? <Pressable style={s.loadMore} onPress={loadMoreSearch}><Text style={s.loadMoreText}>Scroll to load more videos</Text></Pressable> : null}
+      /> : tab === 'account' ? <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={s.accountContent} keyboardShouldPersistTaps="handled">
           <View style={s.accountCard}>
             <Text style={s.accountIcon}>{user?.name?.[0]?.toUpperCase() || '♫'}</Text>
@@ -585,7 +652,6 @@ function MusicApp() {
               <Pressable onPress={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }}><Text style={s.linkText}>{mode === 'login' ? 'New here? Create account' : 'Already have an account? Sign in'}</Text></Pressable>
             </> : <Pressable style={s.outlineButton} onPress={signOut}><Text style={s.linkText}>Sign out</Text></Pressable>}
           </View>
-          <Pressable style={s.notificationCard} onPress={enableNotifications}><View style={s.notificationIcon}><Text style={s.notificationIconGlyph}>♢</Text></View><View style={{ flex: 1 }}><Text style={s.sectionTitle}>NEW MUSIC, ON YOUR TERMS</Text><Text style={s.notificationCopy}>Get a heads-up when artists you follow release something new.</Text></View><Text style={s.notificationArrow}>›</Text></Pressable>
           <Pressable style={s.serverCard} onPress={updateServerAddress}><Text style={s.sectionTitle}>SERVER CONNECTION</Text><Text style={s.muted}>This phone connects to</Text><Text style={s.serverUrl}>{apiBase}</Text><Text style={s.linkText}>Tap here to change address</Text></Pressable>
         </ScrollView>
       </KeyboardAvoidingView> : null}
@@ -640,6 +706,7 @@ const s = StyleSheet.create({
   miniPlayer: { marginHorizontal: 14, marginBottom: 9, padding: 8, backgroundColor: C.panel, borderRadius: 13, borderWidth: 1, borderColor: C.line, flexDirection: 'row', alignItems: 'center', gap: 10 }, miniArt: { width: 42, height: 42, borderRadius: 8, backgroundColor: C.panel2 }, miniMusic: { color: C.purple, fontSize: 18 }, miniControl: { width: 38, height: 38, borderRadius: 20, backgroundColor: C.purple, alignItems: 'center', justifyContent: 'center' }, nowTitle: { color: C.text, fontWeight: '700', fontSize: 13 }, muted: { color: C.muted, fontSize: 12, lineHeight: 18 }, playGlyph: { color: '#fff', fontWeight: '900' },
   backButton: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingRight: 14 }, backGlyph: { color: C.text, fontSize: 32, lineHeight: 34, marginRight: 4 }, backLabel: { color: C.text, fontSize: 16, fontWeight: '700' },
   searchWrap: { marginHorizontal: 18, flexDirection: 'row', alignItems: 'center', borderRadius: 12, backgroundColor: C.panel, borderColor: C.line, borderWidth: 1, paddingLeft: 13, paddingRight: 5, height: 47, marginBottom: 20 }, searchInput: { flex: 1, color: C.text, fontSize: 14 }, searchButton: { width: 38, height: 38, borderRadius: 10, backgroundColor: C.purple, justifyContent: 'center', alignItems: 'center' }, searchGlyph: { color: '#fff', fontSize: 25, marginTop: -5 },
+  suggestionPanel: { marginHorizontal: 18, marginTop: -2, marginBottom: 14, overflow: 'hidden', borderRadius: 13, borderWidth: 1, borderColor: C.line, backgroundColor: C.panel, elevation: 7 }, searchSuggestion: { minHeight: 54, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, gap: 10, borderBottomWidth: 1, borderBottomColor: C.line }, searchSuggestionIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: C.panel2, alignItems: 'center', justifyContent: 'center' }, searchSuggestionGlyph: { color: C.purple, fontSize: 17 }, searchSuggestionTitle: { color: C.text, fontSize: 12, fontWeight: '700' }, searchSuggestionDetail: { color: C.muted, fontSize: 10, marginTop: 2 }, searchSuggestionArrow: { color: C.muted, fontSize: 16 }, infiniteFooter: { minHeight: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
   errorBox: { marginHorizontal: 18, backgroundColor: '#361e2a', padding: 10, borderRadius: 10, marginBottom: 10 }, errorText: { color: '#ffb1c2', fontSize: 12 },
   headingRow: { paddingHorizontal: 20, marginBottom: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }, eyebrow: { color: C.purple, fontSize: 9, fontWeight: '800', letterSpacing: 1.8 }, heading: { color: C.text, fontWeight: '800', fontSize: 23, marginTop: 3 }, linkText: { color: C.purple, fontWeight: '700', fontSize: 12 },
   list: { paddingHorizontal: 17, paddingBottom: 22 }, trackCard: { backgroundColor: C.panel, borderRadius: 14, overflow: 'hidden', marginBottom: 14, borderWidth: 1, borderColor: C.line }, artWrap: { width: '100%', height: 188, backgroundColor: '#20222e' }, art: { width: '100%', height: '100%' }, artFallback: { alignItems: 'center', justifyContent: 'center', backgroundColor: '#252136' }, artMusic: { color: C.purple, fontSize: 45 }, artPlay: { position: 'absolute', left: 13, bottom: 12, width: 35, height: 35, borderRadius: 19, backgroundColor: C.purple, alignItems: 'center', justifyContent: 'center' }, artPlayText: { color: '#fff', fontSize: 13, marginLeft: 2 }, duration: { position: 'absolute', bottom: 13, right: 11, backgroundColor: '#08090cdd', borderRadius: 5, paddingHorizontal: 6, paddingVertical: 3 }, durationText: { color: '#fff', fontSize: 9 },
@@ -652,5 +719,5 @@ const s = StyleSheet.create({
   serverCard: { marginTop: 15, backgroundColor: C.panel, padding: 17, borderRadius: 14, borderWidth: 1, borderColor: C.line, gap: 7 }, serverUrl: { color: C.text, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12 },
   modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000b', zIndex: 4, justifyContent: 'center', padding: 22 }, modalCard: { backgroundColor: C.panel, padding: 18, borderRadius: 16, borderWidth: 1, borderColor: C.line }, modalActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 9, marginTop: 9 },
   tabs: { flexDirection: 'row', paddingTop: 8, backgroundColor: C.bg, borderTopWidth: 1, borderTopColor: C.line }, tab: { flex: 1, alignItems: 'center', gap: 3, paddingVertical: 2 }, tabIcon: { color: C.muted, fontSize: 20 }, tabLabel: { color: C.muted, fontSize: 10, fontWeight: '600' }, loadMore: { alignSelf: 'center', paddingVertical: 14, paddingHorizontal: 22, borderRadius: 12, borderWidth: 1, borderColor: C.purple, marginTop: 6, marginBottom: 14 }, loadMoreText: { color: C.text, fontSize: 13, fontWeight: '700' },
-  playerScroll: { flex: 1 }, playerScreen: { paddingHorizontal: 16, paddingBottom: 30 }, playerMedia: { height: 218, borderRadius: 18, backgroundColor: '#050506', overflow: 'hidden', marginBottom: 18, borderWidth: 1, borderColor: C.line }, playerPoster: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }, playerVideo: { width: '100%', height: '100%' }, playerArtwork: { width: '100%', height: '100%' }, videoTag: { position: 'absolute', top: 12, left: 12, zIndex: 2, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#090a12cc', paddingHorizontal: 9, paddingVertical: 6, borderRadius: 20 }, videoTagDot: { width: 6, height: 6, borderRadius: 4, backgroundColor: C.purple }, videoTagText: { color: '#fff', fontSize: 8, fontWeight: '800', letterSpacing: 1 }, videoMessage: { ...StyleSheet.absoluteFillObject, zIndex: 3, backgroundColor: '#050506aa', alignItems: 'center', justifyContent: 'center', padding: 20, gap: 10 }, videoMessageText: { color: C.text, textAlign: 'center', fontSize: 13 }, videoRetry: { backgroundColor: C.purple, borderRadius: 8, paddingHorizontal: 15, paddingVertical: 9 }, videoRetryText: { color: '#fff', fontWeight: '700', fontSize: 12 }, playerMusic: { color: C.purple, fontSize: 70 }, trackInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 }, trackInfoCopy: { flex: 1 }, playerEyebrow: { color: C.purple, fontSize: 9, letterSpacing: 1.7, fontWeight: '800', marginBottom: 5 }, playerTitle: { color: C.text, fontSize: 20, lineHeight: 26, fontWeight: '800' }, playerArtist: { color: C.muted, fontSize: 13, marginTop: 3 }, playerFavorite: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 22, backgroundColor: C.panel2 }, playerFavoriteGlyph: { color: C.text, fontSize: 24 }, progressLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 0, marginBottom: 7 }, progressTime: { color: C.muted, fontSize: 11, fontVariant: ['tabular-nums'] }, progressTrack: { height: 4, borderRadius: 4, backgroundColor: C.line, overflow: 'hidden' }, progressFill: { height: '100%', backgroundColor: C.purple, borderRadius: 4 }, transportControls: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 17, marginBottom: 17 }, transportSide: { width: 38, alignItems: 'center' }, transportSideGlyph: { color: C.text, fontSize: 22, fontWeight: '700' }, seekButton: { width: 42, height: 42, borderRadius: 23, backgroundColor: C.panel, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.line }, seekGlyph: { color: C.text, fontSize: 10, fontWeight: '700' }, transportPlay: { width: 58, height: 58, borderRadius: 30, backgroundColor: C.purple, alignItems: 'center', justifyContent: 'center', shadowColor: C.purple, shadowOpacity: 0.35, shadowRadius: 13, shadowOffset: { width: 0, height: 5 }, elevation: 7 }, transportPlayGlyph: { color: '#fff', fontSize: 21, fontWeight: '900' }, adCard: { alignItems: 'center', backgroundColor: C.panel, borderRadius: 13, borderWidth: 1, borderColor: C.line, paddingTop: 8, paddingBottom: 5, marginBottom: 20, overflow: 'hidden' }, adLabel: { alignSelf: 'flex-start', color: C.muted, fontSize: 8, fontWeight: '800', letterSpacing: 1.4, paddingHorizontal: 11, paddingBottom: 5 }, queueHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }, queueCount: { color: C.text, fontWeight: '700', marginTop: 3, fontSize: 12 }, queueRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 7, borderTopWidth: 1, borderTopColor: C.line, paddingVertical: 8 }, suggestionRow: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10, borderTopWidth: 1, borderTopColor: C.line, paddingVertical: 8 }, queuePosition: { color: C.muted, fontSize: 10, width: 18 }, queueArt: { width: 40, height: 40, borderRadius: 7, backgroundColor: C.panel2 }, queueTrack: { flex: 1, minWidth: 65 }, queueTrackTitle: { color: C.text, fontSize: 11, fontWeight: '700' }, queueAction: { paddingHorizontal: 6, paddingVertical: 8, backgroundColor: C.panel2, borderRadius: 7 }, queueActionText: { color: C.text, fontSize: 9, fontWeight: '700' }, queueRemove: { paddingHorizontal: 3, paddingVertical: 8 }, suggestionAdd: { color: C.purple, fontSize: 10, fontWeight: '800' }, recommendationCard: { backgroundColor: '#201b36', borderRadius: 13, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: '#383052' }, recommendationText: { color: C.text, fontSize: 14, fontWeight: '700', marginTop: 5 }, recommendationSub: { color: C.muted, fontSize: 11, marginTop: 3 }, recentSearchSection: { marginBottom: 14 }, recentSearchList: { marginTop: 8 }, recentSearchChip: { maxWidth: 180, marginRight: 8, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: C.panel, borderWidth: 1, borderColor: C.line }, recentSearchText: { color: C.text, fontSize: 11, fontWeight: '600' }, nowPlayingBadge: { flexDirection: 'row', alignItems: 'center', gap: 7, borderRadius: 18, backgroundColor: C.panel, borderColor: C.line, borderWidth: 1, paddingHorizontal: 11, paddingVertical: 8 }, nowPlayingBadgeText: { color: C.muted, fontSize: 9, fontWeight: '800', letterSpacing: 1 }, notificationCard: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 14, backgroundColor: C.panel, padding: 14, borderRadius: 14, borderWidth: 1, borderColor: C.line }, notificationIcon: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: '#29233e' }, notificationIconGlyph: { color: C.purple, fontSize: 23 }, notificationCopy: { color: C.muted, fontSize: 11, lineHeight: 16, marginTop: 4 }, notificationArrow: { color: C.purple, fontSize: 24, marginLeft: 3 },
+  playerScroll: { flex: 1 }, playerScreen: { paddingHorizontal: 16, paddingBottom: 30 }, playerMedia: { height: 218, borderRadius: 18, backgroundColor: '#050506', overflow: 'hidden', marginBottom: 18, borderWidth: 1, borderColor: C.line }, playerPoster: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, width: '100%', height: '100%' }, playerVideo: { width: '100%', height: '100%' }, playerArtwork: { width: '100%', height: '100%' }, videoTag: { position: 'absolute', top: 12, left: 12, zIndex: 2, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#090a12cc', paddingHorizontal: 9, paddingVertical: 6, borderRadius: 20 }, videoTagDot: { width: 6, height: 6, borderRadius: 4, backgroundColor: C.purple }, videoTagText: { color: '#fff', fontSize: 8, fontWeight: '800', letterSpacing: 1 }, videoMessage: { ...StyleSheet.absoluteFillObject, zIndex: 3, backgroundColor: '#050506aa', alignItems: 'center', justifyContent: 'center', padding: 20, gap: 10 }, videoMessageText: { color: C.text, textAlign: 'center', fontSize: 13 }, videoRetry: { backgroundColor: C.purple, borderRadius: 8, paddingHorizontal: 15, paddingVertical: 9 }, videoRetryText: { color: '#fff', fontWeight: '700', fontSize: 12 }, playerMusic: { color: C.purple, fontSize: 70 }, trackInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 }, trackInfoCopy: { flex: 1 }, playerEyebrow: { color: C.purple, fontSize: 9, letterSpacing: 1.7, fontWeight: '800', marginBottom: 5 }, playerTitle: { color: C.text, fontSize: 20, lineHeight: 26, fontWeight: '800' }, playerArtist: { color: C.muted, fontSize: 13, marginTop: 3 }, playerFavorite: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 22, backgroundColor: C.panel2 }, playerFavoriteGlyph: { color: C.text, fontSize: 24 }, progressLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 0, marginBottom: 7 }, progressTime: { color: C.muted, fontSize: 11, fontVariant: ['tabular-nums'] }, progressTrack: { height: 4, borderRadius: 4, backgroundColor: C.line, overflow: 'hidden' }, progressFill: { height: '100%', backgroundColor: C.purple, borderRadius: 4 }, transportControls: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 17, marginBottom: 17 }, transportSide: { width: 38, alignItems: 'center' }, transportSideGlyph: { color: C.text, fontSize: 22, fontWeight: '700' }, seekButton: { width: 42, height: 42, borderRadius: 23, backgroundColor: C.panel, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.line }, seekGlyph: { color: C.text, fontSize: 10, fontWeight: '700' }, transportPlay: { width: 58, height: 58, borderRadius: 30, backgroundColor: C.purple, alignItems: 'center', justifyContent: 'center', shadowColor: C.purple, shadowOpacity: 0.35, shadowRadius: 13, shadowOffset: { width: 0, height: 5 }, elevation: 7 }, transportPlayGlyph: { color: '#fff', fontSize: 21, fontWeight: '900' }, queueHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }, queueCount: { color: C.text, fontWeight: '700', marginTop: 3, fontSize: 12 }, queueRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 7, borderTopWidth: 1, borderTopColor: C.line, paddingVertical: 8 }, suggestionRow: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10, borderTopWidth: 1, borderTopColor: C.line, paddingVertical: 8 }, queuePosition: { color: C.muted, fontSize: 10, width: 18 }, queueArt: { width: 40, height: 40, borderRadius: 7, backgroundColor: C.panel2 }, queueTrack: { flex: 1, minWidth: 65 }, queueTrackTitle: { color: C.text, fontSize: 11, fontWeight: '700' }, queueAction: { paddingHorizontal: 6, paddingVertical: 8, backgroundColor: C.panel2, borderRadius: 7 }, queueActionText: { color: C.text, fontSize: 9, fontWeight: '700' }, queueRemove: { paddingHorizontal: 3, paddingVertical: 8 }, suggestionAdd: { color: C.purple, fontSize: 10, fontWeight: '800' }, recommendationCard: { backgroundColor: '#201b36', borderRadius: 13, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: '#383052' }, recommendationText: { color: C.text, fontSize: 14, fontWeight: '700', marginTop: 5 }, recommendationSub: { color: C.muted, fontSize: 11, marginTop: 3 }, recentSearchSection: { marginBottom: 14 }, recentSearchList: { marginTop: 8 }, recentSearchChip: { maxWidth: 180, marginRight: 8, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: C.panel, borderWidth: 1, borderColor: C.line }, recentSearchText: { color: C.text, fontSize: 11, fontWeight: '600' }, nowPlayingBadge: { flexDirection: 'row', alignItems: 'center', gap: 7, borderRadius: 18, backgroundColor: C.panel, borderColor: C.line, borderWidth: 1, paddingHorizontal: 11, paddingVertical: 8 }, nowPlayingBadgeText: { color: C.muted, fontSize: 9, fontWeight: '800', letterSpacing: 1 },
 });

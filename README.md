@@ -9,16 +9,16 @@ Sonara is a video-first music app. Its web app and backend run from this project
 3. From this folder, run `npm install` and then `npm start`.
 4. Open `http://localhost:5000`.
 
-## Run Sonara on your phone
+## Run Sonara with Expo Go
 
-Sonara now includes native Google Mobile Ads, Meta and Pangle mediation adapters, and OneSignal push support. These native SDKs do not run inside Expo Go. Build and install a Sonara development app on Android first:
+Install Expo Go on your phone, then:
 
-1. Install and sign in to EAS CLI (`npm install -g eas-cli`, then `eas login`).
-2. Run `npm run build:android:dev` and install the generated development APK on your phone.
-3. Start the backend with `npm run server:lan`, then run `npm run mobile` and open the project in the Sonara development app (not Expo Go).
-4. Keep the phone and computer on the same Wi-Fi. In Sonara, tap the connection badge or **Account → Server connection** and enter `http://YOUR-COMPUTER-IP:5000`.
+1. In one terminal, run `npm run server:lan` so the phone can reach the music backend.
+2. In another terminal, run `npm run mobile` and wait for the QR code.
+3. Keep your phone and computer on the same Wi-Fi. Scan the QR code with Expo Go.
+4. In Sonara, tap the connection badge or **Account → Server connection** and enter `http://YOUR-COMPUTER-IP:5000`.
 
-Development uses Google's sample AdMob app IDs and test banner placement. Set `ADMOB_ANDROID_APP_ID`, `ADMOB_IOS_APP_ID`, `EXPO_PUBLIC_ADMOB_BANNER_ID`, and `EXPO_PUBLIC_ONESIGNAL_APP_ID` in `.env` for your own accounts. Production builds refuse to run until these values are configured. Push delivery also needs Firebase Cloud Messaging credentials added to the OneSignal dashboard. Meta and Pangle need active mediation groups and placement mappings in AdMob before their demand can serve.
+Google Mobile Ads, Meta/Pangle mediation, and OneSignal are intentionally left out of this Expo Go setup for now because they require native modules and a custom development build. Background playback also depends on native configuration and may not continue while Expo Go is closed.
 
 The computer backend must stay running while you use it. The app uses the project's existing `assets/icon.png`, `assets/adaptive-icon.png`, and `assets/splash.png` assets.
 
